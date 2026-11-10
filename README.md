@@ -9,7 +9,8 @@ Arabic text that comes out of spreadsheets, CSV exports and PDFs looks fine on s
 | `"INV-١٢٣"` ≠ `"INV-123"` | Eastern Arabic digits | `normalize_digits` |
 | header `"رقم"` not found | Excel wrapped it in invisible RLM marks | `strip_invisible`, `normalize_key` |
 | `float("١٬٢٥٠٫٥٠")` crashes | Arabic decimal/thousands separators | `to_number` |
-| `"ﻎﻠﺒﻤﻟﺍ 1250"` from a PDF | shaped glyphs stored in visual order | `repair_presentation_forms` |
+| `"غلبملا 1250"` from a PDF | extractors return characters in visual order | `visual_to_logical` |
+| `"ﻎﻠﺒﻤﻟﺍ 1250"` from an older PDF | shaped glyphs, also in visual order | `repair_presentation_forms` |
 | mojibake when reading a CSV | legacy Windows-1256 export | `sniff_encoding` |
 | `"15/09/1445"` parsed as year 1445 | Hijri dates | `looks_hijri` |
 
@@ -34,7 +35,12 @@ nq.parse_bool("نعم")                         # True
 nq.looks_hijri("١٥/٠٩/١٤٤٥")                 # True
 nq.text_direction("المبلغ 1250")             # 'rtl'
 
-# Text extracted from a PDF that stores Arabic in visual order:
+# Text from a PDF extractor (pdfplumber, pdfminer...) comes out in visual order:
+nq.visual_to_logical("1250 غلبملا", base="rtl")                     # 'المبلغ 1250'
+nq.visual_to_logical("Date / (١٤٤٦ ناضمر ١٣) 14-03-2025 :خيراتلا", base="ltr")
+# 'Date / التاريخ: 2025-03-14 (١٣ رمضان ١٤٤٦)'
+
+# Older PDFs store pre-shaped glyphs; this reorders *and* turns them back into letters:
 nq.repair_presentation_forms("1250 ﻎﻠﺒﻤﻟﺍ")   # 'المبلغ 1250'
 
 raw = open("export.csv", "rb").read(1_000_000)
@@ -53,20 +59,25 @@ open("export.csv", encoding=nq.sniff_encoding(raw))  # 'cp1256' for old Arabic W
 | `parse_bool(value)` | `true/false/yes/no/1/0` and `نعم/لا` → `bool`, else `None` |
 | `looks_hijri(value)` | Detects Hijri-looking dates (AH years 1300–1499). Detection only: converting depends on which Hijri calendar the source used. |
 | `text_direction(text)` | `'rtl'`/`'ltr'` from the first strong character (Unicode bidi rule P2) |
+| `visual_to_logical(text, base="auto")` | Visual → logical order, line by line, following the Unicode Bidirectional Algorithm's rules for numbers, Latin runs and brackets. `base="rtl"\|"ltr"` sets the paragraph direction; `"auto"` guesses per line. |
 | `has_presentation_forms(text)` | Contains Arabic presentation-form glyphs (U+FB50–U+FEFF) |
-| `repair_presentation_forms(text, base="auto")` | Restores logical order and base letters. Numbers and Latin runs keep their order, brackets are mirrored, and lam-alef ligatures are handled. `base="rtl"\|"ltr"` overrides the per-line direction guess. |
+| `repair_presentation_forms(text, base="auto")` | For lines made of presentation-form glyphs: `visual_to_logical` + NFKC (after reordering, so lam-alef ligatures come out right) |
 | `sniff_encoding(raw_bytes)` | BOM → UTF-8 → Windows-1256 (if the non-ASCII text is mostly Arabic) → Windows-1252 → Latin-1 |
 
-### How `repair_presentation_forms` works
+### How `visual_to_logical` works
 
-Some PDF producers write Arabic as already-shaped glyphs laid out left-to-right, so a text extractor returns each line reversed. Reversing the whole line back is the common fix, and it's wrong: numbers and Latin words get reversed too (`1250` → `0521`). nuqta does this instead:
+PDF extractors order characters by x position, so Arabic comes out in *visual* order: the order produced by the Unicode Bidirectional Algorithm (UBA) when it lays logical text out for display. The usual fix is reversing the whole line, and it's wrong: numbers and Latin words get reversed too (`1250` → `0521`).
 
-1. It guesses the line's base direction by counting strong RTL and LTR characters, or uses `base=` if you pass it.
-2. For an RTL line, it flips the whole line and then flips each LTR run back. A run is strong LTR characters plus the neutrals between them, so `INV-77` and `Total Due` survive intact.
-3. For an LTR line, it reverses only the Arabic runs.
-4. It applies NFKC *after* reordering, because a lam-alef ligature is one glyph in visual order but two letters in logical order.
+nuqta undoes the layout instead. It finds the spans the UBA would have reversed and reverses only those, keeping inner runs in order. The UBA rules that decide those spans are the ones that matter in practice:
 
-Limits: the direction guess is a heuristic, and a mostly-Latin RTL line needs `base="rtl"`. Harakat (diacritics) in visual-order text aren't tested.
+- **W2:** a number after an Arabic word becomes an "Arabic number". `-` no longer holds it together, so `2025-03-14` is displayed as `14-03-2025`, and nuqta reads it back correctly.
+- **W4/W5:** `1,250.00` stays one number, and `15%` and `$20` stay attached (except after Arabic, per W2).
+- **W7:** a number after a Latin letter joins the Latin run, as in `ORD-1000` and `A4`.
+- **N0:** bracket pairs follow their content, and brackets in reversed spans are mirrored back, matching what browser-printed PDFs contain.
+
+The tests round-trip realistic AR/EN lines through [python-bidi](https://github.com/MeirKriheli/python-bidi), a full UBA implementation used as the reference: render forward, then `visual_to_logical`, and require the original string back. nuqta itself stays standard-library only.
+
+Limits: the inverse isn't unique. For example, `Total 500 المبلغ` and `Total المبلغ 500` render identically, and nuqta assumes the number belongs to the Arabic. `base="auto"` guesses each line's direction by counting letters, so pass `base=` when you know the document's direction. Explicit bidi control characters and harakat (diacritics) aren't handled.
 
 ## Use cases
 

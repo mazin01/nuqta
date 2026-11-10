@@ -141,3 +141,45 @@ def test_sniff_encoding():
     assert nq.sniff_encoding("café,crème\n".encode("cp1252")) == "cp1252"
     # A sample cut mid-character is still UTF-8.
     assert nq.sniff_encoding(arabic.encode("utf-8")[:7]) == "utf-8"
+
+
+# ── visual → logical, checked against a reference UBA implementation ───────────
+
+RTL_LINES = [
+    "المبلغ 1250",
+    "المبلغ (1250)",
+    "رقم INV-77 تم",
+    "الإجمالي: 1,250.00 ريال",
+    "التاريخ 2025-04-02",
+    "التاريخ: ٢٠٢٥/٠٤/٠٢",
+    "الفرع: الشمال. الفترة: ٢٠٢٥.",
+    "رقم الطلب ORD-1000 بتاريخ 2025-04-02",
+    "نسبة الخصم 15% فقط",
+    "كابل USB 2m أسود",
+    "المجموع ١٢٣ و 456",
+    "سعر الوحدة 21.63",
+    "حبر أزرق (عبوة)",
+]
+LTR_LINES = [
+    "Invoice / فاتورة",
+    "Date / التاريخ: 2025-03-14 (١٣ رمضان ١٤٤٦)",
+    "Customer / العميل: Example Trading Co. / شركة المثال التجارية",
+    "Total المبلغ 500",
+    "Item - دباسة",
+    "Thank you for your business. شكراً لتعاملكم معنا.",
+    "Ref: رقم",
+]
+
+
+@pytest.mark.parametrize("logical,base", [(s, "rtl") for s in RTL_LINES] + [(s, "ltr") for s in LTR_LINES])
+def test_visual_to_logical_round_trips_through_uba(logical, base):
+    bidi = pytest.importorskip("bidi")
+    visual = bidi.get_display(logical, base_dir="R" if base == "rtl" else "L")
+    # python-bidi reorders but doesn't mirror brackets (real PDFs do; see the
+    # explicit bracket tests), so compare with brackets folded together.
+    fold = str.maketrans(")]", "([")
+    assert nq.visual_to_logical(visual, base=base).translate(fold) == logical.translate(fold)
+
+
+def test_visual_to_logical_untouched_without_rtl():
+    assert nq.visual_to_logical("Total 1,250.00 (USD)") == "Total 1,250.00 (USD)"

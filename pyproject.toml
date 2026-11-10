@@ -12,4 +12,4 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+test = ["pytest>=8", "python-bidi>=0.6"]  # python-bidi: reference UBA for round-trip tests only
