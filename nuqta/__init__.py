@@ -86,6 +86,7 @@ def normalize_key(value: object) -> str:
 _ARABIC_DECIMAL = "٫"     # ٫
 _ARABIC_THOUSANDS = "٬"   # ٬
 _NUMBER_RE = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+_SPACED_THOUSANDS_RE = re.compile(r"[(+-]?\d{1,3}( \d{3})+(\.\d+)?\)?")
 
 
 def to_number(value: object) -> float | None:
@@ -99,7 +100,8 @@ def to_number(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     s = normalize_key(value).replace(_ARABIC_THOUSANDS, "").replace(",", "").replace(_ARABIC_DECIMAL, ".")
-    s = s.replace(" ", "")
+    if _SPACED_THOUSANDS_RE.fullmatch(s):  # "1 250 000": spaces as thousands separators
+        s = s.replace(" ", "")              # anything else with a space is not one number
     negative = s.startswith("(") and s.endswith(")")
     if negative:
         s = s[1:-1]
@@ -283,15 +285,42 @@ def _rtl_spans_in_ltr(s: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _reverse_keeping(s: str, keep: list[tuple[int, int]]) -> str:
-    """Reverse s (mirroring brackets) but leave the `keep` spans' insides as they are."""
+def _clusters(s: str) -> list[str]:
+    """Split into letter + following combining marks (harakat, shadda...), kept together
+    when reversing. PDF extractors sort by x position, which puts a mark after its letter."""
+    out: list[str] = []
+    for c in s:
+        if out and unicodedata.bidirectional(c) == "NSM":
+            out[-1] += c
+        else:
+            out.append(c)
+    return out
+
+
+def _reverse_keeping(s: str, keep: list[tuple[int, int]], mirror: bool) -> str:
+    """Reverse s by clusters (mirroring brackets if asked), leaving `keep` spans' insides as they are."""
+    def rev(part: str) -> str:
+        r = "".join(reversed(_clusters(part)))
+        return r.translate(_MIRROR) if mirror else r
+
     parts, pos = [], 0
     for a, b in keep:
-        parts.append(s[pos:a][::-1].translate(_MIRROR))
-        parts.append(s[a:b])
+        parts += [rev(s[pos:a]), s[a:b]]
         pos = b
-    parts.append(s[pos:][::-1].translate(_MIRROR))
+    parts.append(rev(s[pos:]))
     return "".join(reversed(parts))
+
+
+def _balanced(s: str) -> bool:
+    for open_, close in ("()", "[]", "{}", "<>", "«»"):
+        depth = 0
+        for c in s:
+            depth += (c == open_) - (c == close)
+            if depth < 0:
+                return False
+        if depth:
+            return False
+    return True
 
 
 def _guess_base(line: str) -> str:
@@ -302,19 +331,30 @@ def _guess_base(line: str) -> str:
     return "rtl" if rtl >= ltr else "ltr"
 
 
-def _visual_to_logical_line(line: str, base: str) -> str:
+def _reorder(line: str, base: str, mirror: bool) -> str:
+    if base == "rtl":
+        return _reverse_keeping(line, _ltr_runs_in_rtl(line), mirror)
+    out, pos = [], 0
+    for a, b in _rtl_spans_in_ltr(line):
+        span = line[a:b]
+        out += [line[pos:a], _reverse_keeping(span, _number_runs(span), mirror)]
+        pos = b
+    return "".join(out) + line[pos:]
+
+
+def _visual_to_logical_line(line: str, base: str, mirror="auto") -> str:
     if not any(unicodedata.bidirectional(c) in ("R", "AL") for c in line):
         return line
     if base == "auto":
         base = _guess_base(line)
-    if base == "rtl":
-        return _reverse_keeping(line, _ltr_runs_in_rtl(line))
-    out, pos = [], 0
-    for a, b in _rtl_spans_in_ltr(line):
-        span = line[a:b]
-        out += [line[pos:a], _reverse_keeping(span, _number_runs(span))]
-        pos = b
-    return "".join(out) + line[pos:]
+    out = _reorder(line, base, mirror is not False)
+    if mirror == "auto" and not _balanced(out):
+        # Some producers store brackets as displayed (mirrored), others as typed.
+        # Take whichever reading leaves the brackets balanced.
+        plain = _reorder(line, base, False)
+        if _balanced(plain):
+            return plain
+    return out
 
 
 def _check_base(base: str) -> None:
@@ -322,17 +362,22 @@ def _check_base(base: str) -> None:
         raise ValueError(f"base must be 'auto', 'rtl' or 'ltr', got {base!r}")
 
 
-def visual_to_logical(text: str, base: str = "auto") -> str:
+def visual_to_logical(text: str, base: str = "auto", mirror="auto") -> str:
     """Turn visually ordered text (as PDF extractors return it) back into logical order.
 
     "1250 غلبملا" → "المبلغ 1250". Numbers and Latin words keep their own order,
-    brackets are mirrored back, and lines with no Arabic/Hebrew are untouched.
+    combining marks stay on their letter, and lines with no Arabic/Hebrew are untouched.
 
     base: paragraph direction of each line: "auto" (majority guess), "rtl" or
     "ltr". Pass it when you know the document's direction; the guess is per line.
+    mirror: whether brackets in reversed text were stored as displayed (True, e.g.
+    browser-printed PDFs) or as typed (False, e.g. InDesign). "auto" picks, per
+    line, the reading that leaves the brackets balanced.
     """
     _check_base(base)
-    return "\n".join(_visual_to_logical_line(line, base) for line in text.split("\n"))
+    if mirror not in ("auto", True, False):
+        raise ValueError(f"mirror must be 'auto', True or False, got {mirror!r}")
+    return "\n".join(_visual_to_logical_line(line, base, mirror) for line in text.split("\n"))
 
 
 def has_presentation_forms(text: str) -> bool:

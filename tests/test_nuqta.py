@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 import nuqta as nq
@@ -53,12 +55,14 @@ def test_normalize_key_folds_presentation_forms():
     ("1e3", 1000.0),
     (" ١٢٣ ", 123.0),
     (7, 7.0),
+    ("1 250 000", 1250000.0),
 ])
 def test_to_number(raw, expected):
     assert nq.to_number(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["", None, "abc", "12a", "1.2.3", True, "()"])
+@pytest.mark.parametrize("raw", ["", None, "abc", "12a", "1.2.3", True, "()",
+                                 "16,642 0 38", "12 3", "1 25"])  # several numbers, not one
 def test_to_number_rejects(raw):
     assert nq.to_number(raw) is None
 
@@ -175,6 +179,9 @@ LTR_LINES = [
 def test_visual_to_logical_round_trips_through_uba(logical, base):
     bidi = pytest.importorskip("bidi")
     visual = bidi.get_display(logical, base_dir="R" if base == "rtl" else "L")
+    # python-bidi leaves reversed harakat *before* their letter (UBA rule L3 not
+    # applied); x-sorted PDF extraction puts them after. Convert to the PDF convention.
+    visual = re.sub("([\u064b-\u065f\u0670]+)(.)", r"\2\1", visual)
     # python-bidi reorders but doesn't mirror brackets (real PDFs do; see the
     # explicit bracket tests), so compare with brackets folded together.
     fold = str.maketrans(")]", "([")
@@ -183,3 +190,22 @@ def test_visual_to_logical_round_trips_through_uba(logical, base):
 
 def test_visual_to_logical_untouched_without_rtl():
     assert nq.visual_to_logical("Total 1,250.00 (USD)") == "Total 1,250.00 (USD)"
+
+
+# ── patterns seen in a real InDesign-produced Arabic PDF ───────────────────────
+
+def test_combining_marks_stay_on_their_letter():
+    # Visual order from an x-sorted extractor: each mark follows its letter.
+    visual = "لصِّفت"            # تفصِّل, reversed by position
+    assert nq.visual_to_logical(visual, base="rtl") == "تفصِّل"
+
+
+def test_brackets_stored_as_typed_are_not_mirrored():
+    # InDesign keeps "(" ")" as typed; browsers store the displayed (mirrored) glyph.
+    as_typed = ")اهتادوجوم( لوصأ"           # visual of: أصول (موجوداتها)
+    as_displayed = "(اهتادوجوم) لوصأ"
+    assert nq.visual_to_logical(as_typed, base="rtl") == "أصول (موجوداتها)"
+    assert nq.visual_to_logical(as_displayed, base="rtl") == "أصول (موجوداتها)"
+    assert nq.visual_to_logical(as_typed, base="rtl", mirror=True) == "أصول )موجوداتها("
+    with pytest.raises(ValueError):
+        nq.visual_to_logical("x", mirror="sometimes")

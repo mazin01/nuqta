@@ -55,11 +55,11 @@ open("export.csv", encoding=nq.sniff_encoding(raw))  # 'cp1256' for old Arabic W
 | `strip_invisible(text)` | Removes ZWSP/ZWJ/ZWNJ, LRM/RLM/ALM, bidi embeddings and isolates, BOM |
 | `canonical_spaces(text)` | NBSP, figure and narrow spaces → regular space |
 | `normalize_key(value)` | NFKC, ASCII digits, no invisibles or tatweel, collapsed whitespace; `"nan"`/`"None"`/`None` → `""`. Idempotent. For joins, matching and dedupe. |
-| `to_number(value)` | Parses Arabic or Latin digits and separators and `(1,250)` negatives; `None` instead of guessing |
+| `to_number(value)` | Parses Arabic or Latin digits and separators, `(1,250)` negatives and `1 250 000` (space thousands); `None` instead of guessing, so `"16,642 0 38"` (several numbers) is `None` |
 | `parse_bool(value)` | `true/false/yes/no/1/0` and `نعم/لا` → `bool`, else `None` |
 | `looks_hijri(value)` | Detects Hijri-looking dates (AH years 1300–1499). Detection only: converting depends on which Hijri calendar the source used. |
 | `text_direction(text)` | `'rtl'`/`'ltr'` from the first strong character (Unicode bidi rule P2) |
-| `visual_to_logical(text, base="auto")` | Visual → logical order, line by line, following the Unicode Bidirectional Algorithm's rules for numbers, Latin runs and brackets. `base="rtl"\|"ltr"` sets the paragraph direction; `"auto"` guesses per line. |
+| `visual_to_logical(text, base="auto", mirror="auto")` | Visual → logical order, line by line, following the Unicode Bidirectional Algorithm's rules for numbers, Latin runs and brackets. `base="rtl"\|"ltr"` sets the paragraph direction; `"auto"` guesses per line. `mirror` says whether brackets were stored as displayed (`True`) or as typed (`False`); `"auto"` picks the reading that balances. |
 | `has_presentation_forms(text)` | Contains Arabic presentation-form glyphs (U+FB50–U+FEFF) |
 | `repair_presentation_forms(text, base="auto")` | For lines made of presentation-form glyphs: `visual_to_logical` + NFKC (after reordering, so lam-alef ligatures come out right) |
 | `sniff_encoding(raw_bytes)` | BOM → UTF-8 → Windows-1256 (if the non-ASCII text is mostly Arabic) → Windows-1252 → Latin-1 |
@@ -73,11 +73,14 @@ nuqta undoes the layout instead. It finds the spans the UBA would have reversed 
 - **W2:** a number after an Arabic word becomes an "Arabic number". `-` no longer holds it together, so `2025-03-14` is displayed as `14-03-2025`, and nuqta reads it back correctly.
 - **W4/W5:** `1,250.00` stays one number, and `15%` and `$20` stay attached (except after Arabic, per W2).
 - **W7:** a number after a Latin letter joins the Latin run, as in `ORD-1000` and `A4`.
-- **N0:** bracket pairs follow their content, and brackets in reversed spans are mirrored back, matching what browser-printed PDFs contain.
+- **N0:** bracket pairs follow their content. Producers disagree on storage: browser-printed PDFs store the *displayed* (mirrored) bracket, while InDesign stores the bracket *as typed*. With `mirror="auto"`, nuqta takes whichever reading leaves each line's brackets balanced.
+- **Harakat** (shadda, kasra, tanween...) are reversed together with their letter, so `تفصِّل` keeps its marks. This assumes marks follow their letter in the visual string, which is what extractors that sort by x position produce.
 
 The tests round-trip realistic AR/EN lines through [python-bidi](https://github.com/MeirKriheli/python-bidi), a full UBA implementation used as the reference: render forward, then `visual_to_logical`, and require the original string back. nuqta itself stays standard-library only.
 
-Limits: the inverse isn't unique. For example, `Total 500 المبلغ` and `Total المبلغ 500` render identically, and nuqta assumes the number belongs to the Arabic. `base="auto"` guesses each line's direction by counting letters, so pass `base=` when you know the document's direction. Explicit bidi control characters and harakat (diacritics) aren't handled.
+Limits: the inverse isn't unique. For example, `Total 500 المبلغ` and `Total المبلغ 500` render identically, and nuqta assumes the number belongs to the Arabic. `base="auto"` guesses each line's direction by counting letters, so pass `base=` when you know the document's direction. Explicit bidi control characters (embeddings, isolates) aren't interpreted.
+
+Checked by hand against public Arabic PDFs made with Adobe InDesign (a regulator's financial-statements guide, a bilingual statistical yearbook, a UN report), via [docsift](https://github.com/mazin01/docsift).
 
 ## Use cases
 
