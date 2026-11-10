@@ -19,7 +19,7 @@ One module, standard library only, Python 3.10+.
 ## Install
 
 ```bash
-pip install git+https://github.com/<you>/nuqta
+pip install git+https://github.com/mazin01/nuqta
 ```
 
 ## Usage
